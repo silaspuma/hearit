@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HearIt — Hear Yourself in Real Time</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg: #0f0f13;
+      --surface: #1a1a24;
+      --border: #2e2e42;
+      --accent: #7c6cfc;
+      --accent-hover: #9a8dff;
+      --stop: #fc6c6c;
+      --stop-hover: #ff8d8d;
+      --text: #e8e8f0;
+      --muted: #888899;
+      --radius: 16px;
+    }
+
+    body {
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      padding: 24px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 48px 40px;
+      max-width: 420px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    .icon {
+      font-size: 3rem;
+      margin-bottom: 16px;
+      line-height: 1;
+    }
+
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.95rem;
+      line-height: 1.5;
+      margin-bottom: 36px;
+    }
+
+    .visualizer-wrapper {
+      margin-bottom: 32px;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+
+    #visualizer {
+      display: block;
+      width: 100%;
+      height: 80px;
+      background: var(--bg);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 14px 36px;
+      font-size: 1rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 50px;
+      cursor: pointer;
+      transition: background 0.18s, transform 0.1s, box-shadow 0.18s;
+      width: 100%;
+      letter-spacing: 0.2px;
+    }
+
+    .btn:active {
+      transform: scale(0.97);
+    }
+
+    .btn-start {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 4px 20px rgba(124, 108, 252, 0.4);
+    }
+
+    .btn-start:hover {
+      background: var(--accent-hover);
+      box-shadow: 0 4px 28px rgba(124, 108, 252, 0.55);
+    }
+
+    .btn-stop {
+      background: var(--stop);
+      color: #fff;
+      box-shadow: 0 4px 20px rgba(252, 108, 108, 0.4);
+    }
+
+    .btn-stop:hover {
+      background: var(--stop-hover);
+      box-shadow: 0 4px 28px rgba(252, 108, 108, 0.55);
+    }
+
+    .status {
+      margin-top: 20px;
+      font-size: 0.85rem;
+      color: var(--muted);
+      min-height: 1.4em;
+    }
+
+    .status.active {
+      color: #7dfa9e;
+    }
+
+    .status.error {
+      color: var(--stop);
+    }
+
+    .pulse {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #7dfa9e;
+      margin-right: 6px;
+      animation: pulse 1.2s ease-in-out infinite;
+      vertical-align: middle;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.4; transform: scale(0.7); }
+    }
+
+    .tip {
+      margin-top: 28px;
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.5;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🎧</div>
+    <h1>HearIt</h1>
+    <p class="subtitle">Hear your voice in real time through your headphones — minimal delay, works in the background.</p>
+
+    <div class="visualizer-wrapper">
+      <canvas id="visualizer"></canvas>
+    </div>
+
+    <button id="mainBtn" class="btn btn-start">
+      🎙️ Start Listening
+    </button>
+
+    <p class="status" id="status">Click Start to begin.</p>
+
+    <p class="tip">
+      ⚠️ Use headphones to prevent audio feedback/echo.<br />
+      Audio continues while this tab is in the background.
+    </p>
+  </div>
+
+  <script>
+    (function () {
+      const btn = document.getElementById('mainBtn');
+      const statusEl = document.getElementById('status');
+      const canvas = document.getElementById('visualizer');
+      const ctx = canvas.getContext('2d');
+
+      let audioCtx = null;
+      let sourceNode = null;
+      let stream = null;
+      let analyser = null;
+      let animFrameId = null;
+      let running = false;
+
+      function setStatus(msg, type = '') {
+        statusEl.className = 'status' + (type ? ' ' + type : '');
+        statusEl.innerHTML = type === 'active'
+          ? `<span class="pulse"></span>${msg}`
+          : msg;
+      }
+
+      function resizeCanvas() {
+        canvas.width = canvas.offsetWidth * window.devicePixelRatio;
+        canvas.height = canvas.offsetHeight * window.devicePixelRatio;
+      }
+
+      function drawVisualizer() {
+        animFrameId = requestAnimationFrame(drawVisualizer);
+
+        const W = canvas.width;
+        const H = canvas.height;
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        analyser.getByteTimeDomainData(dataArray);
+
+        ctx.clearRect(0, 0, W, H);
+        ctx.fillStyle = '#0f0f13';
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.lineWidth = 2 * window.devicePixelRatio;
+        ctx.strokeStyle = '#7c6cfc';
+        ctx.shadowColor = '#7c6cfc';
+        ctx.shadowBlur = 8 * window.devicePixelRatio;
+        ctx.beginPath();
+
+        const sliceWidth = W / bufferLength;
+        let x = 0;
+
+        for (let i = 0; i < bufferLength; i++) {
+          const v = dataArray[i] / 128.0;
+          const y = (v * H) / 2;
+          if (i === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+          x += sliceWidth;
+        }
+
+        ctx.lineTo(W, H / 2);
+        ctx.stroke();
+      }
+
+      function drawIdle() {
+        const W = canvas.width;
+        const H = canvas.height;
+        ctx.clearRect(0, 0, W, H);
+        ctx.fillStyle = '#0f0f13';
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.lineWidth = 2 * window.devicePixelRatio;
+        ctx.strokeStyle = '#2e2e42';
+        ctx.shadowBlur = 0;
+        ctx.beginPath();
+        ctx.moveTo(0, H / 2);
+        ctx.lineTo(W, H / 2);
+        ctx.stroke();
+      }
+
+      async function start() {
+        try {
+          setStatus('Requesting microphone access…');
+          btn.disabled = true;
+
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+            },
+            video: false,
+          });
+
+          // AudioContext must be created after a user gesture (the button click).
+          audioCtx = new AudioContext({ latencyHint: 'interactive' });
+
+          analyser = audioCtx.createAnalyser();
+          analyser.fftSize = 2048;
+
+          sourceNode = audioCtx.createMediaStreamSource(stream);
+          sourceNode.connect(analyser);
+          analyser.connect(audioCtx.destination);
+
+          running = true;
+          btn.disabled = false;
+          btn.textContent = '⏹ Stop';
+          btn.className = 'btn btn-stop';
+          setStatus('Listening — speak into your mic!', 'active');
+
+          resizeCanvas();
+          drawVisualizer();
+        } catch (err) {
+          btn.disabled = false;
+          const msg = err.name === 'NotAllowedError'
+            ? 'Microphone access denied. Please allow it and try again.'
+            : `Error: ${err.message}`;
+          setStatus(msg, 'error');
+        }
+      }
+
+      function stop() {
+        running = false;
+
+        if (animFrameId) {
+          cancelAnimationFrame(animFrameId);
+          animFrameId = null;
+        }
+
+        if (sourceNode) {
+          sourceNode.disconnect();
+          sourceNode = null;
+        }
+
+        if (analyser) {
+          analyser.disconnect();
+          analyser = null;
+        }
+
+        if (audioCtx) {
+          audioCtx.close();
+          audioCtx = null;
+        }
+
+        if (stream) {
+          stream.getTracks().forEach(t => t.stop());
+          stream = null;
+        }
+
+        btn.textContent = '🎙️ Start Listening';
+        btn.className = 'btn btn-start';
+        setStatus('Click Start to begin.');
+
+        resizeCanvas();
+        drawIdle();
+      }
+
+      btn.addEventListener('click', () => {
+        if (running) {
+          stop();
+        } else {
+          start();
+        }
+      });
+
+      // Initial idle draw
+      window.addEventListener('resize', () => {
+        resizeCanvas();
+        if (!running) {
+          drawIdle();
+        }
+      });
+
+      resizeCanvas();
+      drawIdle();
+    })();
+  </script>
+</body>
+</html>
