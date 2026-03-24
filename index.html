@@ -154,6 +154,51 @@
       50%       { opacity: 0.4; transform: scale(0.7); }
     }
 
+    .device-pickers {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
+    .picker-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-align: left;
+    }
+
+    .picker-group label {
+      font-size: 0.85rem;
+      color: var(--muted);
+      white-space: nowrap;
+      min-width: 72px;
+    }
+
+    .picker-group select {
+      flex: 1;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 10px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      font-family: inherit;
+      min-width: 0;
+    }
+
+    .picker-group select:focus {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+      border-color: var(--accent);
+    }
+
+    .picker-group select:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
     .tip {
       margin-top: 28px;
       font-size: 0.78rem;
@@ -174,6 +219,17 @@
       <canvas id="visualizer"></canvas>
     </div>
 
+    <div class="device-pickers">
+      <div class="picker-group">
+        <label for="inputSelect">🎤 Input</label>
+        <select id="inputSelect"></select>
+      </div>
+      <div class="picker-group" id="outputPickerGroup">
+        <label for="outputSelect">🔊 Output</label>
+        <select id="outputSelect"></select>
+      </div>
+    </div>
+
     <button id="mainBtn" class="btn btn-start">
       🎙️ Start Listening
     </button>
@@ -192,6 +248,9 @@
       const statusEl = document.getElementById('status');
       const canvas = document.getElementById('visualizer');
       const ctx = canvas.getContext('2d');
+      const inputSelect = document.getElementById('inputSelect');
+      const outputSelect = document.getElementById('outputSelect');
+      const outputPickerGroup = document.getElementById('outputPickerGroup');
 
       let audioCtx = null;
       let sourceNode = null;
@@ -199,6 +258,64 @@
       let analyser = null;
       let animFrameId = null;
       let running = false;
+
+      // Feature-detect AudioContext output device selection (Chrome 110+).
+      const canSelectOutput = typeof AudioContext !== 'undefined' &&
+        'setSinkId' in AudioContext.prototype;
+
+      if (!canSelectOutput) {
+        outputPickerGroup.hidden = true;
+      }
+
+      // --- Device enumeration ---
+
+      async function populateDevices() {
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+
+          // --- Input devices ---
+          const inputs = devices.filter(d => d.kind === 'audioinput');
+          const prevInput = inputSelect.value;
+          inputSelect.innerHTML = '';
+          inputs.forEach((d, i) => {
+            const opt = document.createElement('option');
+            opt.value = d.deviceId;
+            opt.textContent = d.label || `Microphone ${i + 1}`;
+            inputSelect.appendChild(opt);
+          });
+          // Restore previous selection if still available.
+          if (prevInput && [...inputSelect.options].some(o => o.value === prevInput)) {
+            inputSelect.value = prevInput;
+          }
+
+          // --- Output devices (only if API is supported) ---
+          if (canSelectOutput) {
+            const outputs = devices.filter(d => d.kind === 'audiooutput');
+            const prevOutput = outputSelect.value;
+            outputSelect.innerHTML = '';
+            outputs.forEach((d, i) => {
+              const opt = document.createElement('option');
+              opt.value = d.deviceId;
+              opt.textContent = d.label || `Speaker ${i + 1}`;
+              outputSelect.appendChild(opt);
+            });
+            if (prevOutput && [...outputSelect.options].some(o => o.value === prevOutput)) {
+              outputSelect.value = prevOutput;
+            }
+          }
+        } catch (err) {
+          console.error('Could not enumerate devices:', err);
+        }
+      }
+
+      // Refresh device list whenever devices are plugged/unplugged.
+      navigator.mediaDevices.addEventListener('devicechange', populateDevices);
+
+      // Initial population (device labels are hidden until permission is granted,
+      // but we get placeholder names so the pickers are visible).
+      populateDevices();
+
+      // ---
 
       function setStatus(msg, type = '') {
         statusEl.className = 'status' + (type ? ' ' + type : '');
@@ -270,14 +387,23 @@
           setStatus('Requesting microphone access…');
           btn.disabled = true;
 
+          const deviceId = inputSelect.value;
+          const audioConstraints = {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          };
+          if (deviceId) {
+            audioConstraints.deviceId = { ideal: deviceId };
+          }
+
           stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              echoCancellation: false,
-              noiseSuppression: false,
-              autoGainControl: false,
-            },
+            audio: audioConstraints,
             video: false,
           });
+
+          // Now that we have permission, re-enumerate to get real device labels.
+          await populateDevices();
 
           // AudioContext must be created after a user gesture (the button click).
           audioCtx = new AudioContext({ latencyHint: 'interactive' });
@@ -289,11 +415,20 @@
           sourceNode.connect(analyser);
           analyser.connect(audioCtx.destination);
 
+          // Route audio to the selected output device if supported.
+          if (canSelectOutput && outputSelect.value) {
+            await audioCtx.setSinkId(outputSelect.value);
+          }
+
           running = true;
           btn.disabled = false;
           btn.textContent = '⏹ Stop';
           btn.className = 'btn btn-stop';
           setStatus('Listening — speak into your mic!', 'active');
+
+          // Disable device pickers while audio is running.
+          inputSelect.disabled = true;
+          outputSelect.disabled = true;
 
           resizeCanvas();
           drawVisualizer();
@@ -337,6 +472,10 @@
         btn.textContent = '🎙️ Start Listening';
         btn.className = 'btn btn-start';
         setStatus('Click Start to begin.');
+
+        // Re-enable device pickers.
+        inputSelect.disabled = false;
+        outputSelect.disabled = false;
 
         resizeCanvas();
         drawIdle();
